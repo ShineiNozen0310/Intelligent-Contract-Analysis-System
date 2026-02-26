@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Django / local
+db.sqlite3
+*.sqlite3
+media/
+staticfiles/
+
+# env
+.env
+.venv/
+.idea/
+.vscode/
+
+# Models / caches (强烈建议别进 Git)
+hf_models/
+parsers/mineru/**/models/
+parsers/mineru/**/.cache/
+*.bin
+*.pt
+*.safetensors
+
+# Runtime outputs
+worker_out/
+job_*/
+*.log

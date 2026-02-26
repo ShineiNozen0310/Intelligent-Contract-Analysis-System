@@ -1,0 +1,15 @@
+--index-url https://download.pytorch.org/whl/cu130
+--extra-index-url https://mirrors.aliyun.com/pypi/simple
+--extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu130/
+
+torch==2.10.0
+torchvision==0.25.0
+torchaudio==2.10.0
+
+paddleocr==2.7.3
+paddlepaddle-gpu==3.3.0
+
+numpy==1.26.4
+opencv-python==4.11.0.86
+opencv-contrib-python==4.11.0.86
+opencv-python-headless==4.11.0.86
