@@ -1,7 +1,7 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-import 'features/review/review_page.dart';
+import 'features/startup/startup_gate.dart';
 
 class ContractReviewApp extends StatelessWidget {
   const ContractReviewApp({super.key});
@@ -75,7 +75,7 @@ class ContractReviewApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const ReviewPage(),
+      home: const StartupGate(),
     );
   }
 }

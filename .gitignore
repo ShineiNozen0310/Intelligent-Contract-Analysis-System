@@ -1,44 +1,119 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+﻿# =========================
+# OS / Editor / IDE
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*.tmp
+*.bak
+*.orig
+*.rej
 
-# Django / local
+.idea/
+.vscode/
+.fleet/
+.history/
+
+# =========================
+# Python / Virtualenv / Build
+# =========================
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.py,cover
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+.venv/
+venv/
+.venv_litellm/
+.python-version
+
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# =========================
+# Local config / secrets
+# =========================
+.env
+.env.*
+!.env.example
+*.env.local
+local_settings.py
+
+# =========================
+# Django / Runtime outputs
+# =========================
 db.sqlite3
 *.sqlite3
 media/
 staticfiles/
 
-# env
-.env
-.venv/
-.idea/
-.vscode/
+worker_out/
+job_*/
+runtime/
+logs/
+*.pid
+*.log
+celerybeat-schedule
 
-# Models / caches (强烈建议别进 Git)
+# =========================
+# Model / weights / cache
+# =========================
 hf_models/
+models/
 parsers/mineru/**/models/
 parsers/mineru/**/.cache/
 *.bin
 *.pt
+*.pth
+*.ckpt
 *.safetensors
 
-# Runtime outputs
-worker_out/
-job_*/
-*.log
-models/
-runtime/
-*.pid
-.venv_litellm/
-.venv/
-hf_models/
-media/
-runtime/
+# =========================
+# Flutter SDK / build outputs
+# =========================
 tools/flutter/
 tools/*.zip
-apps/mobile_client_flutter/build/
+tools/*.7z
+
 apps/mobile_client_flutter/.dart_tool/
+apps/mobile_client_flutter/build/
+apps/mobile_client_flutter/.flutter-plugins
+apps/mobile_client_flutter/.flutter-plugins-dependencies
+apps/mobile_client_flutter/.packages
+apps/mobile_client_flutter/*.iml
+apps/mobile_client_flutter/.idea/
+
+apps/mobile_client_flutter/android/.gradle/
+apps/mobile_client_flutter/android/local.properties
+apps/mobile_client_flutter/android/key.properties
+apps/mobile_client_flutter/android/**/build/
+apps/mobile_client_flutter/ios/Flutter/ephemeral/
+apps/mobile_client_flutter/macos/Flutter/ephemeral/
+apps/mobile_client_flutter/linux/flutter/ephemeral/
 apps/mobile_client_flutter/windows/flutter/ephemeral/
+
+# =========================
+# Legacy desktop_app (PySide6/PyInstaller)
+# =========================
+desktop_app/build/
+desktop_app/dist/
+desktop_app/*.spec
+
+# =========================
+# Windows shortcut / desktop artifacts
+# =========================
 *.lnk
