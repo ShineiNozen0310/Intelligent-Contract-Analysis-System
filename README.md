@@ -175,7 +175,7 @@ start_all.bat                  服务管理脚本
 
 ## 子模块文档
 
-- `desktop_app/README.md`
-- `contract_review/README.md`
-- `contract_review_worker/README.md`
-- `DjangoProject1/README.md`
+- [desktop_app/README.md](desktop_app/README.md)
+- [contract_review/README.md](contract_review/README.md)
+- [contract_review_worker/README.md](contract_review_worker/README.md)
+- [DjangoProject1/README.md](DjangoProject1/README.md)
