@@ -43,6 +43,7 @@ from pydantic import BaseModel
 
 from contract_review_worker.app_config import bootstrap
 from contract_review_worker.celery_app import app as celery_app
+from packages.core_engine.result_contract import build_error_result, merge_stamp_result
 from .llm_provider import review_contract, fix_ocr_text
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -1201,14 +1202,6 @@ def _pdf_page_count(pdf_path: str) -> int:
         return -1
 
 
-def _stamp_status_to_cn(status: str) -> str:
-    if status == "YES":
-        return "是"
-    if status == "UNCERTAIN":
-        return "不确定"
-    return "否"
-
-
 def _ensure_stamp2vec_in_path() -> None:
     stamp2vec_root = BASE_DIR / "parsers" / "stamp2vec"
     p = str(stamp2vec_root)
@@ -1911,11 +1904,7 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
                     f"score={guard.get('score')} reasons={','.join(guard.get('reasons') or [])} "
                     f"bad_terms={guard.get('bad_terms') or []}"
                 )
-                result_json = {"error": err, "mode": meta.get("mode"), "meta": meta}
-                if stamp_result:
-                    result_json.update(stamp_result)
-                    if "stamp_status" in stamp_result:
-                        result_json["是否盖章"] = _stamp_status_to_cn(stamp_result.get("stamp_status"))
+                result_json = build_error_result(err, mode=meta.get("mode"), meta=meta, stamp_result=stamp_result)
                 notify_django(
                     {
                         "job_id": job_id,
@@ -1942,11 +1931,7 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
                 review_json["_llm_meta"] = llm_call_meta
         except concurrent.futures.TimeoutError:
             err = f"llm timeout after {timeout_s}s"
-            result_json = {"error": err, "mode": meta.get("mode"), "meta": meta}
-            if stamp_result:
-                result_json.update(stamp_result)
-                if "stamp_status" in stamp_result:
-                    result_json["鏄惁鐩栫珷"] = _stamp_status_to_cn(stamp_result.get("stamp_status"))
+            result_json = build_error_result(err, mode=meta.get("mode"), meta=meta, stamp_result=stamp_result)
             notify_django({
                 "job_id": job_id,
                 "status": "error",
@@ -1961,11 +1946,7 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
             return
         except Exception as e:
             err = f"llm failed: {e}"
-            result_json = {"error": err, "mode": meta.get("mode"), "meta": meta}
-            if stamp_result:
-                result_json.update(stamp_result)
-                if "stamp_status" in stamp_result:
-                    result_json["鏄惁鐩栫珷"] = _stamp_status_to_cn(stamp_result.get("stamp_status"))
+            result_json = build_error_result(err, mode=meta.get("mode"), meta=meta, stamp_result=stamp_result)
             notify_django({
                 "job_id": job_id,
                 "status": "error",
@@ -1979,10 +1960,7 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
             })
             return
 
-        if stamp_result and isinstance(review_json, dict):
-            review_json.update(stamp_result)
-            if "stamp_status" in stamp_result:
-                review_json["是否盖章"] = _stamp_status_to_cn(stamp_result.get("stamp_status"))
+        review_json = merge_stamp_result(review_json, stamp_result)
 
         notify_django({
             "job_id": job_id,

@@ -14,9 +14,13 @@ set "DJANGO_TITLE=DjangoProject1-Django"
 set "WORKER_TITLE=DjangoProject1-Worker"
 set "CELERY_TITLE=DjangoProject1-Celery"
 set "VLLM_TITLE=DjangoProject1-vLLM"
+set "LOCAL_API_TITLE=DjangoProject1-LocalAPI"
 set "VLLM_PY=%PY%"
 set "DJANGO_HEALTH_URL=http://127.0.0.1:8000/contract/api/health/"
 set "WORKER_HEALTH_URL=http://127.0.0.1:8001/healthz"
+
+if not defined LOCAL_API_PORT set "LOCAL_API_PORT=8003"
+set "LOCAL_API_HEALTH_URL=http://127.0.0.1:%LOCAL_API_PORT%/contract/api/health/"
 
 if not defined LOCAL_VLLM_HOST set "LOCAL_VLLM_HOST=127.0.0.1"
 if not defined LOCAL_VLLM_PORT set "LOCAL_VLLM_PORT=8002"
@@ -108,7 +112,8 @@ if not errorlevel 1 (
   start "%WORKER_TITLE%" cmd /k ""%cd%\.venv\Scripts\python.exe" -m uvicorn contract_review_worker.api.main:app --host 127.0.0.1 --port 8001"
 )
 
-call :celery_running
+powershell -NoProfile -Command ^
+  "$found = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(\.exe)?$' -and $_.CommandLine -and $_.CommandLine -like '*-m celery*contract_review_worker.celery_app*worker*' }; if($found) { exit 0 } else { exit 1 }"
 if not errorlevel 1 (
   echo [reuse] %CELERY_TITLE% already running
 ) else (
@@ -124,12 +129,24 @@ if not errorlevel 1 (
   start "%DJANGO_TITLE%" cmd /k ""%cd%\.venv\Scripts\python.exe" manage.py runserver 127.0.0.1:8000 --noreload"
 )
 
+call :port_listening %LOCAL_API_PORT%
+if not errorlevel 1 (
+  echo [reuse] %LOCAL_API_TITLE% already listening at 127.0.0.1:%LOCAL_API_PORT%
+) else (
+  echo [start] %LOCAL_API_TITLE%
+  start "%LOCAL_API_TITLE%" cmd /k ""%cd%\.venv\Scripts\python.exe" -m uvicorn apps.local_api.main:app --host 127.0.0.1 --port %LOCAL_API_PORT%"
+)
+
 echo [ok] services start command sent.
 goto :end
 
 :do_stop
 echo [stop] %VLLM_TITLE%
 taskkill /F /FI "WINDOWTITLE eq %VLLM_TITLE%" >nul 2>nul
+call :kill_port %LOCAL_VLLM_PORT%
+echo [stop] %LOCAL_API_TITLE%
+taskkill /F /FI "WINDOWTITLE eq %LOCAL_API_TITLE%" >nul 2>nul
+call :kill_port %LOCAL_API_PORT%
 echo [stop] %WORKER_TITLE%
 taskkill /F /FI "WINDOWTITLE eq %WORKER_TITLE%" >nul 2>nul
 call :kill_port 8001
@@ -155,11 +172,15 @@ if errorlevel 1 (echo [stopped] %VLLM_TITLE%) else (echo [running] %VLLM_TITLE%)
 call :http_ok "%WORKER_HEALTH_URL%"
 if errorlevel 1 (echo [stopped] %WORKER_TITLE%) else (echo [running] %WORKER_TITLE%)
 
-call :celery_running
+powershell -NoProfile -Command ^
+  "$found = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(\.exe)?$' -and $_.CommandLine -and $_.CommandLine -like '*-m celery*contract_review_worker.celery_app*worker*' }; if($found) { exit 0 } else { exit 1 }"
 if errorlevel 1 (echo [stopped] %CELERY_TITLE%) else (echo [running] %CELERY_TITLE%)
 
 call :http_ok "%DJANGO_HEALTH_URL%"
 if errorlevel 1 (echo [stopped] %DJANGO_TITLE%) else (echo [running] %DJANGO_TITLE%)
+
+call :port_listening %LOCAL_API_PORT%
+if errorlevel 1 (echo [stopped] %LOCAL_API_TITLE%) else (echo [running] %LOCAL_API_TITLE%)
 
 goto :end
 
@@ -177,11 +198,6 @@ powershell -NoProfile -Command ^
   "try { $c = New-Object System.Net.Sockets.TcpClient; $iar = $c.BeginConnect('127.0.0.1', %~1, $null, $null); if($iar.AsyncWaitHandle.WaitOne(800)) { $c.EndConnect($iar); $c.Close(); exit 0 } else { $c.Close(); exit 1 } } catch { exit 1 }"
 exit /b %errorlevel%
 
-:celery_running
-powershell -NoProfile -Command ^
-  "$found = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*celery*contract_review_worker.celery_app*worker*' }; if($found) { exit 0 } else { exit 1 }"
-exit /b %errorlevel%
-
 :kill_port
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%~1 .*LISTENING"') do (
   taskkill /F /PID %%P >nul 2>nul
@@ -190,7 +206,7 @@ exit /b 0
 
 :kill_celery
 powershell -NoProfile -Command ^
-  "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*celery*contract_review_worker.celery_app*worker*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }"
+  "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(\.exe)?$' -and $_.CommandLine -and $_.CommandLine -like '*-m celery*contract_review_worker.celery_app*worker*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }"
 exit /b 0
 
 :end

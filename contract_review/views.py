@@ -15,6 +15,13 @@ from django.http import HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from jinja2 import Template
+from packages.core_engine.result_contract import STAMP_TEXT_KEY, stamp_status_to_cn
+from packages.shared_contract_schema import (
+    build_report_html as build_shared_report_html,
+    build_report_markdown as build_shared_report_markdown,
+    build_report_payload as build_shared_report_payload,
+    normalize_result_json,
+)
 
 try:
     from reportlab.lib import colors
@@ -76,8 +83,30 @@ def start_analyze(request):
     filename = getattr(upload, "name", "uploaded.pdf")
     if not filename.lower().endswith(".pdf"):
         return HttpResponseBadRequest("only PDF is supported")
-    if upload.content_type and upload.content_type not in {"application/pdf", "application/x-pdf"}:
+
+    content_type_raw = (upload.content_type or "").lower().strip()
+    content_type = content_type_raw.split(";", 1)[0].strip()
+    allowed_types = {
+        "",
+        "application/pdf",
+        "application/x-pdf",
+        "application/octet-stream",
+        "binary/octet-stream",
+    }
+    if content_type not in allowed_types:
         return HttpResponseBadRequest("invalid file type (expected PDF)")
+
+    # Some desktop pickers send octet-stream for valid PDFs; verify PDF magic header when readable.
+    try:
+        pos = upload.tell() if hasattr(upload, "tell") else None
+        head = upload.read(5) or b""
+        if hasattr(upload, "seek"):
+            upload.seek(pos if pos is not None else 0)
+        if head and not bytes(head).startswith(b"%PDF-"):
+            return HttpResponseBadRequest("invalid file content (expected PDF)")
+    except Exception:
+        # Keep compatibility for non-seekable upload streams.
+        pass
 
     job = ContractJob.objects.create(
         status="queued",
@@ -172,6 +201,14 @@ def job_status(request, job_id: int):
 
     status = row.get("status") or "queued"
     include_result = status in {"done", "error"}
+    result_json = normalize_result_json(row.get("result_json")) if include_result else None
+    result_markdown = row.get("result_markdown") if status == "done" else ""
+
+    report_payload = None
+    report_html = ""
+    if status == "done":
+        report_payload = build_shared_report_payload(result_json, result_markdown or "")
+        report_html = build_shared_report_html(report_payload)
 
     return JsonResponse(
         {
@@ -180,10 +217,62 @@ def job_status(request, job_id: int):
             "status": status,
             "progress": row.get("progress") or 0,
             "stage": row.get("stage") or "",
-            "result_json": row.get("result_json") if include_result else None,
+            "result_json": result_json,
             "filename": row.get("filename") or "",
-            "result_markdown": row.get("result_markdown") if status == "done" else "",
+            "result_markdown": result_markdown or "",
+            "report_payload": report_payload,
+            "report_html": report_html,
             "error": row.get("error") if status == "error" else "",
+        }
+    )
+
+
+@require_http_methods(["GET"])
+def job_result(request, job_id: int):
+    row = ContractJob.objects.filter(id=job_id).values(
+        "id",
+        "status",
+        "progress",
+        "stage",
+        "result_json",
+        "result_markdown",
+        "filename",
+        "error",
+    ).first()
+    if not row:
+        return JsonResponse({"ok": False, "error": "job not found"}, status=404)
+
+    status = row.get("status") or "queued"
+    is_ready = status in {"done", "error"}
+
+    if is_ready:
+        result_json = normalize_result_json(row.get("result_json"))
+        result_markdown = row.get("result_markdown") or ""
+        report_payload = build_shared_report_payload(result_json, result_markdown)
+        report_html = build_shared_report_html(report_payload)
+        report_markdown = build_shared_report_markdown(report_payload)
+    else:
+        result_json = None
+        result_markdown = ""
+        report_payload = None
+        report_html = ""
+        report_markdown = ""
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "job_id": row["id"],
+            "ready": is_ready,
+            "status": status,
+            "progress": row.get("progress") or 0,
+            "stage": row.get("stage") or "",
+            "filename": row.get("filename") or "",
+            "error": row.get("error") if status == "error" else "",
+            "result_json": result_json,
+            "result_markdown": result_markdown,
+            "report_payload": report_payload,
+            "report_html": report_html,
+            "report_markdown": report_markdown,
         }
     )
 
@@ -270,17 +359,17 @@ def job_update(request):
             else:
                 cur["result_json_raw"] = incoming
             result_json_changed = True
+        if isinstance(cur, dict) and "是否盖章" in cur and STAMP_TEXT_KEY not in cur:
+            cur[STAMP_TEXT_KEY] = cur.get("是否盖章")
+            result_json_changed = True
 
-        has_stamp = isinstance(cur, dict) and ("stamp_status" in cur or "是否盖章" in cur)
+        has_stamp = isinstance(cur, dict) and ("stamp_status" in cur or STAMP_TEXT_KEY in cur or "是否盖章" in cur)
         should_attempt_stamp = payload.get("result_markdown") is not None or status_val in {"done", "error"}
         if (not has_stamp) and should_attempt_stamp:
             text_for_stamp = payload.get("result_markdown") if payload.get("result_markdown") is not None else (job.result_markdown or "")
             try:
                 stamp = detect_stamp_status(text_for_stamp)
-                cur["是否盖章"] = (
-                    "是" if stamp.get("stamp_status") == "YES"
-                    else ("不确定" if stamp.get("stamp_status") == "UNCERTAIN" else "否")
-                )
+                cur[STAMP_TEXT_KEY] = stamp_status_to_cn(stamp.get("stamp_status"))
                 cur["stamp_status"] = stamp.get("stamp_status")
                 cur["stamp_evidence"] = stamp.get("evidence")
             except Exception as e:
@@ -289,7 +378,7 @@ def job_update(request):
             result_json_changed = True
 
         if result_json_changed:
-            job.result_json = cur
+            job.result_json = normalize_result_json(cur)
             update_fields.append("result_json")
 
         if update_fields:
@@ -600,343 +689,6 @@ def _build_pdf_with_reportlab(report_payload: dict, title: str) -> bytes:
     return buf.getvalue()
 
 
-def _first_non_empty(values: list) -> str:
-    for v in values:
-        if isinstance(v, str):
-            s = v.strip()
-            if s:
-                return s
-            continue
-        if v is not None:
-            return str(v)
-    return ""
-
-
-def _first_non_empty_value(values: list):
-    for v in values:
-        if isinstance(v, str):
-            s = v.strip()
-            if s:
-                return s
-            continue
-        if v is not None:
-            return v
-    return None
-
-
-def _as_list(value) -> list:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [x for x in value if x is not None]
-    return [value]
-
-
-def _extract_review_items(result_json: dict, keys: list[str]) -> list:
-    cands = []
-    for k in keys:
-        cands.append(result_json.get(k))
-    for prefix in ("result", "review", "data"):
-        node = result_json.get(prefix)
-        if isinstance(node, dict):
-            for k in keys:
-                cands.append(node.get(k))
-    picked = _first_non_empty_value(cands)
-    return _as_list(picked)
-
-
-def _extract_improvement_suggestions_from_markdown(markdown_text: str, max_items: int = 8) -> list[dict]:
-    if not markdown_text:
-        return []
-    out: list[dict] = []
-    seen = set()
-    for raw_line in markdown_text.splitlines():
-        line = raw_line.strip().lstrip("-*•").strip()
-        if not line:
-            continue
-        m = re.search(r"(?:改进建议|优化建议|完善建议|修改建议|建议)[:：]\s*(.+)", line)
-        if not m:
-            continue
-        suggestion = (m.group(1) or "").strip("；;。 ")
-        if len(suggestion) < 6 or suggestion in seen:
-            continue
-        seen.add(suggestion)
-        out.append({"title": "改进建议", "level": "", "problem": "", "suggestion": suggestion})
-        if len(out) >= max_items:
-            break
-    return out
-
-
-def _fallback_improvements_from_risks(risks: list[dict], max_items: int = 8) -> list[dict]:
-    out: list[dict] = []
-    seen = set()
-    for item in risks:
-        if not isinstance(item, dict):
-            continue
-        suggestion = _first_non_empty(
-            [item.get("suggestion"), item.get("advice"), item.get("fix"), item.get("solution"), item.get("建议"), item.get("修改建议")]
-        )
-        if not suggestion:
-            continue
-        suggestion = suggestion.strip()
-        if len(suggestion) < 6 or suggestion in seen:
-            continue
-        seen.add(suggestion)
-        out.append(
-            {
-                "title": _first_non_empty([item.get("title"), item.get("name"), item.get("item"), "改进建议"]),
-                "level": "",
-                "problem": _first_non_empty([item.get("problem"), item.get("issue"), item.get("description"), item.get("问题")]),
-                "suggestion": suggestion,
-            }
-        )
-        if len(out) >= max_items:
-            break
-    return out
-
-
-def _has_meaningful_review_items(items: list[dict]) -> bool:
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        title = _first_non_empty([item.get("title"), item.get("name"), item.get("item"), item.get("风险点"), item.get("问题点")])
-        problem = _first_non_empty([item.get("problem"), item.get("issue"), item.get("desc"), item.get("description"), item.get("问题")])
-        suggestion = _first_non_empty([item.get("suggestion"), item.get("advice"), item.get("fix"), item.get("solution"), item.get("建议"), item.get("修改建议")])
-        if title or problem or suggestion:
-            return True
-    return False
-
-
-def _normalize_review_item(item: object, default_title: str) -> dict:
-    if isinstance(item, str):
-        text = item.strip()
-        return {"title": text or default_title, "level": "", "problem": text, "suggestion": ""}
-    if isinstance(item, dict):
-        return {
-            "title": _first_non_empty([item.get("title"), item.get("name"), item.get("item"), item.get("风险点"), item.get("问题点"), default_title]),
-            "level": _first_non_empty([item.get("level"), item.get("severity"), item.get("risk_level"), item.get("风险等级")]),
-            "problem": _first_non_empty([item.get("problem"), item.get("issue"), item.get("desc"), item.get("description"), item.get("问题")]),
-            "suggestion": _first_non_empty(
-                [item.get("suggestion"), item.get("advice"), item.get("fix"), item.get("solution"), item.get("建议"), item.get("修改建议")]
-            ),
-        }
-    text = _first_non_empty([item]) or default_title
-    return {"title": text, "level": "", "problem": text, "suggestion": ""}
-
-
-def _build_report_payload(job: ContractJob) -> dict:
-    result_json = job.result_json if isinstance(job.result_json, dict) else {}
-    raw_markdown = (job.result_markdown or "").strip()
-
-    if not result_json:
-        return {
-            "contract_type": "未识别",
-            "confidence_text": "-",
-            "type_source": "markdown",
-            "stamp_text": "未提及",
-            "stamp_color": "#6b7280",
-            "key_facts": {
-                "合同名称": "未提及",
-                "甲方": "未提及",
-                "乙方": "未提及",
-                "金额": "未提及",
-                "期限": "未提及",
-            },
-            "overview": raw_markdown or "暂无概述",
-            "risks": [],
-            "improvements": [],
-        }
-
-    contract_type = _first_non_empty([result_json.get("合同类型"), result_json.get("contract_type"), result_json.get("type"), result_json.get("type_l2")]) or "未识别"
-    type_detail = result_json.get("合同类型明细")
-    if not isinstance(type_detail, dict):
-        type_detail = result_json.get("contract_type_detail")
-    if not isinstance(type_detail, dict):
-        type_detail = result_json.get("type_detail")
-    if not isinstance(type_detail, dict):
-        type_detail = {}
-
-    conf_text = "-"
-    conf = type_detail.get("confidence")
-    if isinstance(conf, (int, float)):
-        conf_text = f"{round(float(conf) * 100)}%"
-    elif conf is not None:
-        conf_text = str(conf)
-
-    stamp_val = result_json.get("是否盖章")
-    if not stamp_val:
-        stamp_status = result_json.get("stamp_status")
-        if stamp_status == "YES":
-            stamp_val = "是"
-        elif stamp_status == "NO":
-            stamp_val = "否"
-        elif stamp_status == "UNCERTAIN":
-            stamp_val = "不确定"
-    stamp_text = _first_non_empty([stamp_val, "未提及"])
-    if stamp_text in ("是", "YES", "True", "true"):
-        stamp_color = "#0c7b48"
-    elif stamp_text in ("否", "NO", "False", "false"):
-        stamp_color = "#b42318"
-    else:
-        stamp_color = "#6b7280"
-
-    key_facts_raw = result_json.get("key_facts")
-    if not isinstance(key_facts_raw, dict):
-        key_facts_raw = {}
-    key_facts = {
-        "合同名称": _first_non_empty([key_facts_raw.get("合同名称"), key_facts_raw.get("协议名称"), key_facts_raw.get("contract_name"), key_facts_raw.get("name"), "未提及"]),
-        "甲方": _first_non_empty([key_facts_raw.get("甲方"), key_facts_raw.get("甲方名称"), key_facts_raw.get("partyA"), key_facts_raw.get("party_a"), "未提及"]),
-        "乙方": _first_non_empty([key_facts_raw.get("乙方"), key_facts_raw.get("乙方名称"), key_facts_raw.get("partyB"), key_facts_raw.get("party_b"), "未提及"]),
-        "金额": _first_non_empty([key_facts_raw.get("金额"), key_facts_raw.get("合同金额"), key_facts_raw.get("总金额"), key_facts_raw.get("amount"), "未提及"]),
-        "期限": _first_non_empty([key_facts_raw.get("期限"), key_facts_raw.get("合同期限"), key_facts_raw.get("有效期"), key_facts_raw.get("term"), "未提及"]),
-    }
-
-    overview = _first_non_empty(
-        [
-            result_json.get("审查概述"),
-            result_json.get("overview"),
-            result_json.get("summary"),
-            (result_json.get("result") or {}).get("overview") if isinstance(result_json.get("result"), dict) else None,
-            raw_markdown,
-        ]
-    ) or "暂无概述"
-
-    risks = [_normalize_review_item(item, "风险点") for item in _extract_review_items(result_json, ["风险点", "risks", "risk_points", "风险点及建议"])]
-    # 风险点区块只展示风险本身，不展示建议文本。
-    for _item in risks:
-        if isinstance(_item, dict):
-            _item["suggestion"] = ""
-
-    improvements = [
-        _normalize_review_item(item, "改进建议")
-        for item in _extract_review_items(
-            result_json,
-            ["改进建议", "改进措施", "improvements", "improvement", "improvement_suggestions", "suggestions", "recommendations", "优化建议", "完善建议", "修改建议", "审查建议"],
-        )
-    ]
-
-    return {
-        "contract_type": contract_type,
-        "confidence_text": conf_text,
-        "type_source": _first_non_empty([type_detail.get("source"), "result_json"]),
-        "stamp_text": stamp_text,
-        "stamp_color": stamp_color,
-        "key_facts": key_facts,
-        "overview": overview,
-        "risks": risks,
-        "improvements": improvements,
-    }
-
-
-def _render_items_md(title: str, items: list[dict]) -> str:
-    lines = [f"## {title}"]
-    if not items:
-        lines.append("- 未识别到相关内容")
-        return "\n".join(lines)
-    for idx, item in enumerate(items, 1):
-        head = _first_non_empty([item.get("title"), title])
-        level = _first_non_empty([item.get("level")])
-        problem = _first_non_empty([item.get("problem")])
-        suggestion = _first_non_empty([item.get("suggestion")])
-        title_line = f"{idx}. {head}"
-        if level:
-            title_line += f"（{level}）"
-        lines.append(title_line)
-        if problem:
-            lines.append(f"   - 问题：{problem}")
-        if suggestion:
-            lines.append(f"   - {suggestion}")
-    return "\n".join(lines)
-
-
-def _render_items_html(title: str, items: list[dict]) -> str:
-    if not items:
-        return f"<h3>{escape(title)}</h3><div class='empty'>未识别到相关内容</div>"
-
-    lines = [f"<h3>{escape(title)}</h3><ol>"]
-    for item in items:
-        head = escape(_first_non_empty([item.get("title"), title]))
-        level = _first_non_empty([item.get("level")])
-        problem = _first_non_empty([item.get("problem")])
-        suggestion = _first_non_empty([item.get("suggestion")])
-        if level:
-            head += f" <span class='muted'>({escape(level)})</span>"
-        lines.append("<li>")
-        lines.append(f"<div><b>{head}</b></div>")
-        if problem:
-            lines.append(f"<div><b>问题：</b>{escape(problem)}</div>")
-        if suggestion:
-            lines.append(f"<div>{escape(suggestion)}</div>")
-        lines.append("</li>")
-    lines.append("</ol>")
-    return "".join(lines)
-
-
-def _build_review_markdown(job: ContractJob, payload: Optional[dict] = None) -> str:
-    report = payload or _build_report_payload(job)
-    lines = [
-        "# 合同审查报告",
-        "",
-        f"- 合同类型：{report.get('contract_type', '未识别')}",
-        f"- 盖章：{report.get('stamp_text', '未提及')}",
-        f"- 类型置信度：{report.get('confidence_text', '-')}",
-        f"- 类型来源：{report.get('type_source', 'result_json')}",
-        "",
-        "## 合同关键要素",
-    ]
-    for k, v in (report.get("key_facts") or {}).items():
-        lines.append(f"- {k}：{v}")
-    lines.extend(
-        [
-            "",
-            "## 审查概述",
-            str(report.get("overview", "暂无概述")),
-            "",
-            _render_items_md("风险点", report.get("risks") or []),
-            "",
-            _render_items_md("改进建议", report.get("improvements") or []),
-            "",
-        ]
-    )
-    return "\n".join(lines).strip()
-
-
-def _build_review_html(job: ContractJob, payload: Optional[dict] = None) -> str:
-    report = payload or _build_report_payload(job)
-    facts_rows = "".join(f"<tr><td class='k'>{escape(str(k))}</td><td>{escape(str(v))}</td></tr>" for k, v in (report.get("key_facts") or {}).items())
-    risks_html = _render_items_html("风险点", report.get("risks") or [])
-    improve_html = _render_items_html("改进建议", report.get("improvements") or [])
-    stamp_color = report.get("stamp_color", "#6b7280")
-
-    return f"""
-<style>
-body {{ font-family: 'Microsoft YaHei','PingFang SC',sans-serif; color:#0f172a; }}
-.title {{ font-size:24px; font-weight:800; margin:0 0 10px; color:#4b6fae; }}
-.meta {{ color:#64748b; margin:2px 0 10px; font-size:13px; }}
-.panel {{
-  border:1px solid #d6e3e0; border-radius:12px; background:#ffffff;
-  padding:12px 14px; margin:0 0 12px;
-}}
-.panel h3 {{ margin:0 0 8px; color:#2f4b6e; }}
-.stamp {{ font-weight:800; color:{stamp_color}; }}
-table {{ border-collapse:collapse; width:100%; }}
-td {{ padding:7px 6px; border-bottom:1px solid #edf2f7; vertical-align:top; }}
-td.k {{ width:120px; color:#475569; font-weight:700; }}
-ol {{ margin:8px 0 0; padding-left:20px; }}
-li {{ margin:8px 0; line-height:1.6; }}
-.muted {{ color:#64748b; font-weight:400; }}
-.empty {{ color:#64748b; font-size:13px; }}
-</style>
-<div class='title'>合同审查报告</div>
-<div class='meta'><b>合同类型：</b>{escape(str(report.get('contract_type', '未识别')))} | <b>盖章：</b><span class='stamp'>{escape(str(report.get('stamp_text', '未提及')))}</span></div>
-<div class='meta'><b>类型置信度：</b>{escape(str(report.get('confidence_text', '-')))} | <b>类型来源：</b>{escape(str(report.get('type_source', 'result_json')))}</div>
-<div class='panel'><h3>合同关键要素</h3><table>{facts_rows}</table></div>
-<div class='panel'><h3>审查概述</h3><div>{escape(str(report.get('overview', '暂无概述')))}</div></div>
-<div class='panel'>{risks_html}</div>
-<div class='panel'>{improve_html}</div>
-"""
-
-
 @require_http_methods(["GET"])
 def export_pdf(request, job_id: int):
     try:
@@ -944,12 +696,13 @@ def export_pdf(request, job_id: int):
     except ContractJob.DoesNotExist:
         return JsonResponse({"ok": False, "error": "job not found"}, status=404)
 
-    report_payload = _build_report_payload(job)
-    report_markdown = _build_review_markdown(job, payload=report_payload)
+    result_json = normalize_result_json(job.result_json)
+    report_payload = build_shared_report_payload(result_json, job.result_markdown or "")
+    report_markdown = build_shared_report_markdown(report_payload)
     if not report_markdown:
         return JsonResponse({"ok": False, "error": "job has no report content yet"}, status=400)
 
-    html = PDF_HTML_TEMPLATE.render(body=_build_review_html(job, payload=report_payload))
+    html = PDF_HTML_TEMPLATE.render(body=build_shared_report_html(report_payload))
 
     options = {
         "encoding": "UTF-8",

@@ -32,3 +32,13 @@ models/
 runtime/
 *.pid
 .venv_litellm/
+.venv/
+hf_models/
+media/
+runtime/
+tools/flutter/
+tools/*.zip
+apps/mobile_client_flutter/build/
+apps/mobile_client_flutter/.dart_tool/
+apps/mobile_client_flutter/windows/flutter/ephemeral/
+*.lnk
