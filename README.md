@@ -1,17 +1,50 @@
 # 合同智能审查系统（Desktop）
 
-这是一个本地运行的合同审查桌面应用。  
-你只需要打开桌面端，系统会在后台自动启动 Django / Worker / Celery，完成 OCR、审查和报告导出。
+一个面向业务落地的合同审查产品：  
+**上传 PDF -> 自动识别 -> 风险审查 -> 改进建议 -> 一键导出报告**。
 
-## 一句话说明
+---
 
-- 产品入口：桌面端（PySide6）
-- 后端地址：`127.0.0.1:8000`（Django）+ `127.0.0.1:8001`（Worker）
-- 本地模型（可选）：`127.0.0.1:8002`（vLLM）
+## 产品定位
 
-## 1. 快速启动（推荐）
+本项目不是“只给开发者看的后端工程”，而是可直接给业务同事使用的桌面产品：
 
-### 1.1 安装依赖
+- 用户只需要打开桌面应用
+- 系统自动拉起本地后端服务
+- 支持本地模型优先，远程模型兜底
+- 审查结果可视化展示，并支持复制/导出
+
+---
+
+## 核心价值
+
+### 1. 快
+- 桌面端一键启动，分钟级可用
+- 支持任务状态实时更新
+
+### 2. 稳
+- 后端服务健康检查与自动复用
+- 本地模型异常时可自动回退远程模型
+
+### 3. 可落地
+- 输出结构化风险点和可执行改进建议
+- 支持 PDF 审查报告导出，便于留痕和流转
+
+---
+
+## 使用流程（给业务用户）
+
+1. 打开桌面端  
+2. 拖拽或选择合同 PDF  
+3. 点击“开始审查”  
+4. 查看合同关键信息、审查概述、风险点、改进建议  
+5. 导出 PDF 或复制报告内容
+
+---
+
+## 三分钟上手（给部署同学）
+
+### 1. 安装依赖
 
 ```bat
 python -m venv .venv
@@ -19,32 +52,31 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-如果你是 GPU 环境，可额外安装：
+GPU 环境可选：
 
 ```bat
 pip install -r requirements-gpu.txt
 ```
 
-### 1.2 启动桌面端
+### 2. 启动产品
 
 ```bat
 launch_desktop_oneclick.bat
 ```
 
-默认是源码模式启动（改完代码马上生效）。
-
-如果你要强制使用打包好的 EXE：
+### 3. 停止服务
 
 ```bat
-set USE_PACKAGED_EXE=1
-launch_desktop_oneclick.bat
+stop_all.bat
 ```
 
-## 2. 模型路由配置（.env）
+---
 
-配置文件是项目根目录 `.env`。
+## 模型策略（本地优先 + 兜底）
 
-### 2.1 本地 vLLM 优先，失败回退远程（推荐）
+配置文件：项目根目录 `.env`
+
+推荐配置（本地 vLLM 优先，失败回退 Qwen Plus）：
 
 ```env
 LLM_PRIMARY_PROVIDER=local_vllm
@@ -57,7 +89,7 @@ LOCAL_VLLM_API_KEY=dummy
 LOCAL_VLLM_MODEL=./hf_models/Qwen3-8B-AWQ
 LOCAL_VLLM_SERVED_MODEL=./hf_models/Qwen3-8B-AWQ
 
-# 小上下文模型建议
+# 小上下文窗口建议
 LOCAL_VLLM_MAX_TOKENS=48
 LOCAL_VLLM_INPUT_CHAR_LIMIT=320
 LOCAL_VLLM_PROMPT_TEXT_MAX_CHARS=240
@@ -66,118 +98,84 @@ LOCAL_VLLM_CONTEXT_WINDOW=256
 LOCAL_VLLM_CONTEXT_SAFETY_MARGIN=16
 ```
 
-### 2.2 只用本地 vLLM（严格）
+---
 
-```env
-LLM_PRIMARY_PROVIDER=local_vllm
-LLM_REQUIRE_LOCAL_VLLM=1
-LLM_LOCAL_FALLBACK_REMOTE=0
+## 架构概览
+
+```text
+Desktop App (PySide6)
+  -> Django API      http://127.0.0.1:8000
+  -> Worker API      http://127.0.0.1:8001
+  -> Celery + Redis  异步任务
+  -> vLLM            http://127.0.0.1:8002/v1 (可选)
 ```
 
-### 2.3 只用远程
+说明：所有服务默认在本机 `127.0.0.1` 通信，不对公网开放。
 
-```env
-LLM_PROVIDER=remote
-LLM_PRIMARY_PROVIDER=remote
-```
+---
 
-## 3. 服务脚本
+## 常用运维命令
 
 ```bat
 start_all.bat start
 start_all.bat stop
 start_all.bat restart
 start_all.bat status
+desktop_app\build_exe.bat
 ```
 
-不建议同时用两种入口重复启动（例如：桌面端 + `start_all.bat start` 并行）。
+---
 
-## 4. 本地 vLLM 启动说明
+## 常见问题
 
-项目已支持自动拉起 vLLM（默认 `8002`）。触发条件之一：
-
-- `LLM_PROVIDER=local_vllm`
-- `LLM_PRIMARY_PROVIDER=local_vllm`
-- `VLLM_ENABLED=1`
-
-默认等价命令：
-
-```bat
-python -m vllm serve "./hf_models/Qwen3-8B-AWQ" --host 127.0.0.1 --port 8002 --served-model-name "./hf_models/Qwen3-8B-AWQ" --api-key dummy --quantization awq_marlin --dtype half --gpu-memory-utilization 0.86 --max-model-len 256 --max-num-seqs 1 --enforce-eager
-```
-
-如果 vLLM 不在项目 `.venv`，可在 `.env` 指定：
-
-```env
-LOCAL_VLLM_PYTHON=你的python路径
-```
-
-或者直接指定完整命令：
-
-```env
-LOCAL_VLLM_START_CMD=你的vllm启动命令
-```
-
-## 5. 常见问题
-
-### 5.1 `attempting to bind ... 8001`
-
-端口冲突（重复启动）导致。执行：
+### 1) `attempting to bind ... 8001`
+原因：重复启动导致端口冲突。  
+处理：
 
 ```bat
 stop_all.bat
 start_all.bat start
 ```
 
-### 5.2 `local vllm health probe failed` / `127.0.0.1:8002 refused`
+### 2) `local vllm health probe failed` / `127.0.0.1:8002 refused`
+原因：本地 vLLM 未成功启动。请检查：
 
-说明本地 vLLM 没有真正启动，检查：
-
-- `LOCAL_VLLM_BASE_URL` 是否是 `http://127.0.0.1:8002/v1`
-- `LOCAL_VLLM_PYTHON` 对应 Python 是否安装了 `vllm`
+- `LOCAL_VLLM_BASE_URL` 是否为 `http://127.0.0.1:8002/v1`
+- 当前 Python 环境是否安装 `vllm`
 - `start_all.bat status` 中 vLLM 是否 running
 
-### 5.3 `You passed xxx input tokens ...`
-
-说明超过了本地模型上下文窗口。继续减小输入：
+### 3) `You passed xxx input tokens ...`
+原因：超过本地模型上下文窗口。可继续调小：
 
 - `LOCAL_VLLM_INPUT_CHAR_LIMIT`
 - `LOCAL_VLLM_PROMPT_TEXT_MAX_CHARS`
-- `LOCAL_VLLM_MAX_TOKENS`（建议 32~64）
+- `LOCAL_VLLM_MAX_TOKENS`
 
-## 6. 打包 EXE
+---
 
-```bat
-desktop_app\build_exe.bat
-```
-
-输出文件：
-
-```text
-desktop_app/dist/ContractReviewDesktop.exe
-```
-
-## 7. 日志位置
-
-桌面端日志：
+## 日志位置
 
 ```text
 C:\Users\<你的用户名>\AppData\Local\ContractReviewDesktop\logs\desktop.log
 ```
 
-## 8. 项目结构（核心）
+---
+
+## 项目结构（核心）
 
 ```text
-DjangoProject1/                Django 配置
-contract_review/               Django 业务接口
-contract_review_worker/        Worker（OCR / LLM / 回调）
+DjangoProject1/                Django 配置层
+contract_review/               业务 API 层
+contract_review_worker/        OCR/LLM Worker 层
 desktop_app/                   桌面端与打包
-hf_models/                     本地模型和缓存
+hf_models/                     本地模型与缓存
+launch_desktop_oneclick.bat    产品一键启动入口
 start_all.bat                  服务管理脚本
-launch_desktop_oneclick.bat    一键启动入口
 ```
 
-## 9. 子模块文档
+---
+
+## 子模块文档
 
 - `desktop_app/README.md`
 - `contract_review/README.md`
