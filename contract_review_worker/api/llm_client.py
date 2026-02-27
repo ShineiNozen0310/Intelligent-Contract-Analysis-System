@@ -4,7 +4,7 @@ import re
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from openai import OpenAI
 
@@ -641,7 +641,7 @@ def _enforce_risk_suggestion_split(data: Dict[str, Any]) -> Dict[str, Any]:
             root[key] = _process_node(node)
     return root
 
-def _postprocess_review_json(data: Dict[str, Any]) -> Dict[str, Any]:
+def _postprocess_review_json(data: Dict[str, Any], force_chinese: Optional[bool] = None) -> Dict[str, Any]:
     if not isinstance(data, dict):
         return data
 
@@ -661,7 +661,8 @@ def _postprocess_review_json(data: Dict[str, Any]) -> Dict[str, Any]:
     out = _normalize_review_language_fields(out)
 
     # 强制中文：若仍出现英文碎片，自动做一轮“JSON中文化重写”。
-    if _env_flag("REVIEW_FORCE_CHINESE", True):
+    should_force_chinese = _env_flag("REVIEW_FORCE_CHINESE", True) if force_chinese is None else bool(force_chinese)
+    if should_force_chinese:
         en_count = _english_fragment_count(out)
         if en_count > 0:
             rewrite_timeout = _env_int("REVIEW_CN_REWRITE_TIMEOUT", 90)

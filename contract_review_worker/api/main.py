@@ -43,7 +43,7 @@ from pydantic import BaseModel
 
 from contract_review_worker.app_config import bootstrap
 from contract_review_worker.celery_app import app as celery_app
-from .llm_client import qwen_plus_review, qwen_fix_ocr_text
+from .llm_provider import review_contract, fix_ocr_text
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 bootstrap(BASE_DIR)
@@ -1512,9 +1512,9 @@ def _clip_text_for_llm(text: str) -> tuple[str, Dict[str, Any]]:
 # =========================
 # LLM with timeout
 # =========================
-def _llm_with_timeout(text: str, timeout_s: int) -> dict:
+def _llm_with_timeout(text: str, timeout_s: int) -> tuple[dict, Dict[str, Any]]:
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(qwen_plus_review, text)
+        fut = ex.submit(review_contract, text)
         return fut.result(timeout=timeout_s)
 
 
@@ -1883,12 +1883,12 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
                 }
             )
             try:
-                fixed_text = qwen_fix_ocr_text(final_text)
+                fixed_text, fix_meta = fix_ocr_text(final_text)
                 if fixed_text and len(fixed_text.strip()) >= max(120, int(len(final_text.strip()) * 0.45)):
                     final_text = _normalize_ocr_text(fixed_text)
-                    meta["ocr_llm_fix"] = {"applied": True, "chars": len(final_text)}
+                    meta["ocr_llm_fix"] = {"applied": True, "chars": len(final_text), "llm": fix_meta}
                 else:
-                    meta["ocr_llm_fix"] = {"applied": False, "reason": "too_short_or_empty"}
+                    meta["ocr_llm_fix"] = {"applied": False, "reason": "too_short_or_empty", "llm": fix_meta}
             except Exception as e:
                 meta["ocr_llm_fix"] = {"applied": False, "error": str(e)}
             notify_django(
@@ -1936,7 +1936,10 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
         notify_django({"job_id": job_id, "status": "running", "progress": 80, "stage": "llm_start", "mode": meta.get("mode"), "meta": meta})
 
         try:
-            review_json = _llm_with_timeout(llm_text, timeout_s)
+            review_json, llm_call_meta = _llm_with_timeout(llm_text, timeout_s)
+            meta["llm_call"] = llm_call_meta
+            if isinstance(review_json, dict):
+                review_json["_llm_meta"] = llm_call_meta
         except concurrent.futures.TimeoutError:
             err = f"llm timeout after {timeout_s}s"
             result_json = {"error": err, "mode": meta.get("mode"), "meta": meta}

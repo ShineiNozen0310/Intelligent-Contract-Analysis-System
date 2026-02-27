@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0\.."
 
-if exist "desktop_app\dist\ContractReviewDesktop.exe" (
+if /I "%USE_PACKAGED_EXE%"=="1" if exist "desktop_app\dist\ContractReviewDesktop.exe" (
   "desktop_app\dist\ContractReviewDesktop.exe"
   endlocal
   exit /b 0

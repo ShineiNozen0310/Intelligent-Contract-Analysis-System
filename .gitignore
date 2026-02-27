@@ -28,3 +28,7 @@ parsers/mineru/**/.cache/
 worker_out/
 job_*/
 *.log
+models/
+runtime/
+*.pid
+.venv_litellm/

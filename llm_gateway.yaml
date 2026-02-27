@@ -1,0 +1,18 @@
+﻿model_list:
+  - model_name: qwen-main
+    litellm_params:
+      model: openai/Qwen/Qwen3-8B-AWQ
+      api_base: http://127.0.0.1:8002/v1
+      api_key: sk-local-anything
+
+  - model_name: qwen-backup
+    litellm_params:
+      model: openai/qwen-plus
+      api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api_key: 你的真实DashScopeKey
+
+router_settings:
+  fallbacks: [{"qwen-main": ["qwen-backup"]}]
+
+litellm_settings:
+  master_key: sk-gateway-123

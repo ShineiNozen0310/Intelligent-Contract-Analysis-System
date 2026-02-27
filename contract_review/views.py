@@ -589,7 +589,7 @@ def _build_pdf_with_reportlab(report_payload: dict, title: str) -> bytes:
                 story.append(Paragraph(f"<b>问题：</b>{escape(problem)}", styles["body"]))
             suggestion = str(item.get("suggestion", "") or "")
             if suggestion:
-                story.append(Paragraph(f"<b>建议：</b>{escape(suggestion)}", styles["body"]))
+                story.append(Paragraph(f"{escape(suggestion)}", styles["body"]))
             story.append(Spacer(1, 3))
         story.append(Spacer(1, 6))
 
@@ -845,7 +845,7 @@ def _render_items_md(title: str, items: list[dict]) -> str:
         if problem:
             lines.append(f"   - 问题：{problem}")
         if suggestion:
-            lines.append(f"   - 建议：{suggestion}")
+            lines.append(f"   - {suggestion}")
     return "\n".join(lines)
 
 
@@ -866,7 +866,7 @@ def _render_items_html(title: str, items: list[dict]) -> str:
         if problem:
             lines.append(f"<div><b>问题：</b>{escape(problem)}</div>")
         if suggestion:
-            lines.append(f"<div><b>建议：</b>{escape(suggestion)}</div>")
+            lines.append(f"<div>{escape(suggestion)}</div>")
         lines.append("</li>")
     lines.append("</ol>")
     return "".join(lines)

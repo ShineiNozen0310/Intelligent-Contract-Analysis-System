@@ -1,4 +1,4 @@
-﻿# -*- mode: python ; coding: utf-8 -*-
+# -*- mode: python ; coding: utf-8 -*-
 
 
 a = Analysis(
@@ -35,7 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\Users\60385\Desktop\Intelligent Contract Analysis System\\contract_review_launcher.ico'],
+    icon=['C:\\Users\\60385\\Desktop\\Intelligent Contract Analysis System\\contract_review_launcher.ico'],
 )
-
-

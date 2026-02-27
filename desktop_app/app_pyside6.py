@@ -978,7 +978,7 @@ class ContractReviewDesktopApp(QMainWindow):
                 if problem:
                     lines.append(f"<div><b>\u95ee\u9898\uff1a</b>{escape(str(problem))}</div>")
                 if suggestion:
-                    lines.append(f"<div><b>\u5efa\u8bae\uff1a</b>{escape(str(suggestion))}</div>")
+                    lines.append(f"<div>{escape(str(suggestion))}</div>")
                 lines.append("</li>")
                 continue
             lines.append(f"<li>{escape(str(item))}</li>")
