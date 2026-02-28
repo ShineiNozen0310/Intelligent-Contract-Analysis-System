@@ -1,10 +1,9 @@
 @echo off
 setlocal
-cd /d "%~dp0"
 if /I "%~1"=="-h" goto :help
 if /I "%~1"=="--help" goto :help
 if /I "%~1"=="help" goto :help
-call "%~dp0scripts\dev\launch_flutter_oneclick.bat" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch_flutter_oneclick.ps1" %*
 set "EC=%ERRORLEVEL%"
 endlocal & exit /b %EC%
 

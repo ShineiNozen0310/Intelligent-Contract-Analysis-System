@@ -1,14 +1,11 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $root
+$target = Join-Path $root 'scripts\dev\launch_flutter_oneclick.ps1'
 
-& "$root\start_all.bat" start
-if ($LASTEXITCODE -ne 0) {
-    throw "backend startup failed"
+if (!(Test-Path $target)) {
+    throw "missing target script: $target"
 }
 
-& "$root\run_flutter_client.bat"
-if ($LASTEXITCODE -ne 0) {
-    throw "flutter client startup failed"
-}
+& $target @args
+exit $LASTEXITCODE

@@ -9,10 +9,11 @@
     litellm_params:
       model: openai/qwen-plus
       api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
-      api_key: 你的真实DashScopeKey
+      api_key: os.environ/DASHSCOPE_API_KEY
 
 router_settings:
   fallbacks: [{"qwen-main": ["qwen-backup"]}]
 
 litellm_settings:
   master_key: sk-gateway-123
+

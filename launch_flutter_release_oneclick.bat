@@ -1,8 +1,6 @@
 @echo off
 setlocal
-
 cd /d "%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch_flutter_release_oneclick.ps1"
+call "%~dp0scripts\release\launch_flutter_release_oneclick.bat" %*
 set "EC=%ERRORLEVEL%"
-
 endlocal & exit /b %EC%

@@ -1,24 +1,11 @@
-﻿param(
-    [Parameter(Mandatory = $true)][int]$FrontendPid,
-    [Parameter(Mandatory = $true)][string]$RootPath
-)
+﻿$ErrorActionPreference = "Stop"
 
-$ErrorActionPreference = 'SilentlyContinue'
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$target = Join-Path $root 'scripts\ops\watch_frontend_and_stop.ps1'
 
-while ($true) {
-    Start-Sleep -Milliseconds 900
-    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$FrontendPid"
-    if (-not $proc) { break }
-    if ($proc.Name -ne 'contract_review_flutter.exe') { break }
+if (!(Test-Path $target)) {
+    throw "missing target script: $target"
 }
 
-
-$otherFrontends = @(Get-CimInstance Win32_Process -Filter "Name='contract_review_flutter.exe'")
-if ($otherFrontends.Count -gt 0) {
-    exit 0
-}
-
-$stopBat = Join-Path $RootPath 'stop_all.bat'
-if (Test-Path $stopBat) {
-    cmd.exe /c "`"$stopBat`"" | Out-Null
-}
+& $target @args
+exit $LASTEXITCODE
