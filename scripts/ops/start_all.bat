@@ -24,8 +24,16 @@ set "WORKER_HEALTH_URL=http://127.0.0.1:8001/healthz"
 if not defined LOCAL_API_PORT set "LOCAL_API_PORT=8003"
 set "LOCAL_API_HEALTH_URL=http://127.0.0.1:%LOCAL_API_PORT%/contract/api/health/"
 
+if not defined DJANGO_HOST set "DJANGO_HOST=127.0.0.1"
+if not defined DJANGO_PORT set "DJANGO_PORT=8000"
+if not defined DJANGO_SERVER_MODE set "DJANGO_SERVER_MODE=waitress"
+
 if not defined LOCAL_VLLM_HOST set "LOCAL_VLLM_HOST=127.0.0.1"
 if not defined LOCAL_VLLM_PORT set "LOCAL_VLLM_PORT=8002"
+if defined LOCAL_VLLM_BASE_URL (
+  for /f %%H in ('powershell -NoProfile -Command "$u=[uri]'%LOCAL_VLLM_BASE_URL%'; $u.Host"') do set "LOCAL_VLLM_HOST=%%H"
+  for /f %%P in ('powershell -NoProfile -Command "$u=[uri]'%LOCAL_VLLM_BASE_URL%'; if($u.Port -gt 0){$u.Port}else{8002}"') do set "LOCAL_VLLM_PORT=%%P"
+)
 if not defined LOCAL_VLLM_MODEL set "LOCAL_VLLM_MODEL=.\hf_models\Qwen3-8B-AWQ"
 if not defined LOCAL_VLLM_SERVED_MODEL set "LOCAL_VLLM_SERVED_MODEL=%LOCAL_VLLM_MODEL%"
 if not defined LOCAL_VLLM_API_KEY set "LOCAL_VLLM_API_KEY=dummy"
@@ -73,10 +81,21 @@ if not exist "%PY%" (
   exit /b 1
 )
 
+if not defined RUN_DJANGO_MIGRATE_ON_START set "RUN_DJANGO_MIGRATE_ON_START=1"
+if /I "%RUN_DJANGO_MIGRATE_ON_START%"=="1" (
+  echo [init] Django migrate --noinput
+  "%PY%" manage.py migrate --noinput >nul 2>nul
+  if errorlevel 1 (
+    echo [error] django migrate failed. retry with full output...
+    "%PY%" manage.py migrate --noinput
+    exit /b 1
+  )
+)
+
 echo [llm] route provider=%LLM_PROVIDER% primary=%LLM_PRIMARY_PROVIDER% vllm_enabled=%VLLM_ENABLED% require_local=%LLM_REQUIRE_LOCAL_VLLM%
 
 if /I "%VLLM_ENABLED%"=="1" (
-  call :port_listening %LOCAL_VLLM_PORT%
+  call :port_listening %LOCAL_VLLM_PORT% %LOCAL_VLLM_HOST%
   if not errorlevel 1 (
     echo [reuse] %VLLM_TITLE% endpoint already listening at %LOCAL_VLLM_HOST%:%LOCAL_VLLM_PORT%
   ) else (
@@ -127,8 +146,9 @@ call :http_ok "%DJANGO_HEALTH_URL%"
 if not errorlevel 1 (
   echo [reuse] %DJANGO_TITLE% already healthy at 127.0.0.1:8000
 ) else (
-  echo [start] %DJANGO_TITLE%
-  start "%DJANGO_TITLE%" cmd /k ""%cd%\.venv\Scripts\python.exe" manage.py runserver 127.0.0.1:8000 --noreload"
+  call :prepare_django_cmd
+  call echo [start] %DJANGO_TITLE% ^(%%DJANGO_EFFECTIVE_MODE%%^)
+  call start "%DJANGO_TITLE%" cmd /k "%%DJANGO_CMD%%"
 )
 
 call :port_listening %LOCAL_API_PORT%
@@ -168,7 +188,7 @@ call "%~f0" start
 goto :end
 
 :do_status
-call :port_listening %LOCAL_VLLM_PORT%
+call :port_listening %LOCAL_VLLM_PORT% %LOCAL_VLLM_HOST%
 if errorlevel 1 (echo [stopped] %VLLM_TITLE%) else (echo [running] %VLLM_TITLE%)
 
 call :http_ok "%WORKER_HEALTH_URL%"
@@ -190,6 +210,23 @@ goto :end
 echo Usage: start_all.bat [start^|stop^|restart^|status^|help]
 goto :end
 
+:prepare_django_cmd
+set "DJANGO_EFFECTIVE_MODE=%DJANGO_SERVER_MODE%"
+if /I "%DJANGO_EFFECTIVE_MODE%"=="waitress" (
+  "%PY%" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('waitress') else 1)" >nul 2>nul
+  if errorlevel 1 (
+    echo [warn] waitress package not found in %PY%. fallback to runserver.
+    set "DJANGO_EFFECTIVE_MODE=runserver"
+  )
+)
+
+if /I "%DJANGO_EFFECTIVE_MODE%"=="runserver" (
+  set "DJANGO_CMD="%cd%\.venv\Scripts\python.exe" manage.py runserver %DJANGO_HOST%:%DJANGO_PORT% --noreload"
+) else (
+  set "DJANGO_CMD="%cd%\.venv\Scripts\python.exe" -m waitress --listen=%DJANGO_HOST%:%DJANGO_PORT% DjangoProject1.wsgi:application"
+)
+exit /b 0
+
 :http_ok
 powershell -NoProfile -Command ^
   "$ProgressPreference='SilentlyContinue'; try { $r = Invoke-WebRequest -UseBasicParsing '%~1' -TimeoutSec 2; if($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { exit 0 } else { exit 1 } } catch { exit 1 }"
@@ -197,7 +234,7 @@ exit /b %errorlevel%
 
 :port_listening
 powershell -NoProfile -Command ^
-  "try { $c = New-Object System.Net.Sockets.TcpClient; $iar = $c.BeginConnect('127.0.0.1', %~1, $null, $null); if($iar.AsyncWaitHandle.WaitOne(800)) { $c.EndConnect($iar); $c.Close(); exit 0 } else { $c.Close(); exit 1 } } catch { exit 1 }"
+  "try { $targetHost = '127.0.0.1'; if('%~2' -ne '') { $targetHost = '%~2' }; $c = New-Object System.Net.Sockets.TcpClient; $iar = $c.BeginConnect($targetHost, %~1, $null, $null); if($iar.AsyncWaitHandle.WaitOne(800)) { $c.EndConnect($iar); $c.Close(); exit 0 } else { $c.Close(); exit 1 } } catch { exit 1 }"
 exit /b %errorlevel%
 
 :kill_port
@@ -213,3 +250,10 @@ exit /b 0
 
 :end
 endlocal
+
+
+
+
+
+
+

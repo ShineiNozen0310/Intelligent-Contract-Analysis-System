@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import time
 from html import escape
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,7 @@ import pdfkit
 import requests
 from django.conf import settings
 from django.http import HttpResponse, HttpResponseBadRequest, JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from jinja2 import Template
@@ -61,6 +63,41 @@ def _require_worker_token(request) -> bool:
         return True
     req_token = request.headers.get("X-Worker-Token") or request.META.get("HTTP_X_WORKER_TOKEN")
     return bool(req_token) and req_token == token
+
+
+def _merge_runtime_meta(current: Optional[dict], incoming: Optional[dict], *, stage: str = "", progress: Optional[int] = None) -> dict:
+    meta = dict(current) if isinstance(current, dict) else {}
+
+    if isinstance(incoming, dict):
+        for k, v in incoming.items():
+            meta[k] = v
+
+    if stage:
+        history = meta.get("stage_history")
+        if not isinstance(history, list):
+            history = []
+
+        event = {
+            "stage": stage,
+            "ts": timezone.now().isoformat(timespec="seconds"),
+        }
+        if progress is not None:
+            event["progress"] = progress
+
+        should_append = True
+        if history:
+            last = history[-1]
+            if isinstance(last, dict) and last.get("stage") == stage and last.get("progress") == progress:
+                should_append = False
+
+        if should_append:
+            history.append(event)
+            if len(history) > 120:
+                history = history[-120:]
+        meta["stage_history"] = history
+
+    meta["updated_at"] = timezone.now().isoformat(timespec="seconds")
+    return meta
 
 
 @require_http_methods(["GET"])
@@ -115,6 +152,7 @@ def start_analyze(request):
         file_sha256="",
         filename=filename,
         result_markdown="",
+        runtime_meta={"stage_history": [{"stage": "queued", "progress": 0, "ts": timezone.now().isoformat(timespec="seconds")}]},
         error="",
     )
 
@@ -150,7 +188,11 @@ def start_analyze(request):
     try:
         data = {}
         last_err = None
+        submit_attempts = 0
+        submit_started = time.perf_counter()
+
         for _ in range(max(1, _get_worker_submit_retry())):
+            submit_attempts += 1
             try:
                 r = _WORKER_SESSION.post(worker_url, json=payload, timeout=_get_worker_timeout())
                 r.raise_for_status()
@@ -169,15 +211,31 @@ def start_analyze(request):
         if isinstance(data, dict) and data.get("ok") is False:
             raise RuntimeError(f"worker returned ok=false: {data.get('error')}")
 
+        submit_seconds = round(time.perf_counter() - submit_started, 3)
+        runtime_meta = _merge_runtime_meta(
+            job.runtime_meta,
+            {"submit_attempts": submit_attempts, "submit_seconds": submit_seconds},
+            stage="submitted",
+            progress=1,
+        )
+
         job.status = "running"
         job.stage = "submitted"
         job.progress = 1
-        job.save(update_fields=["status", "stage", "progress"])
+        job.runtime_meta = runtime_meta
+        job.save(update_fields=["status", "stage", "progress", "runtime_meta"])
 
     except Exception as e:
+        runtime_meta = _merge_runtime_meta(
+            job.runtime_meta,
+            {"submit_failed": True},
+            stage="submit_failed",
+            progress=100,
+        )
         job.status = "error"
         job.error = f"submit to worker failed: {e}"
-        job.save(update_fields=["status", "error"])
+        job.runtime_meta = runtime_meta
+        job.save(update_fields=["status", "error", "runtime_meta"])
         return JsonResponse({"ok": False, "error": job.error}, status=500)
 
     return JsonResponse({"ok": True, "job_id": job.id})
@@ -195,6 +253,7 @@ def job_status(request, job_id: int):
         "filename",
         "result_markdown",
         "error",
+        "runtime_meta",
     ).first()
     if not row:
         return JsonResponse({"ok": False, "error": "job not found"}, status=404)
@@ -222,6 +281,7 @@ def job_status(request, job_id: int):
             "result_markdown": result_markdown or "",
             "report_payload": report_payload,
             "report_html": report_html,
+            "runtime_meta": row.get("runtime_meta") if isinstance(row.get("runtime_meta"), dict) else {},
             "error": row.get("error") if status == "error" else "",
         }
     )
@@ -238,6 +298,7 @@ def job_result(request, job_id: int):
         "result_markdown",
         "filename",
         "error",
+        "runtime_meta",
     ).first()
     if not row:
         return JsonResponse({"ok": False, "error": "job not found"}, status=404)
@@ -267,6 +328,7 @@ def job_result(request, job_id: int):
             "progress": row.get("progress") or 0,
             "stage": row.get("stage") or "",
             "filename": row.get("filename") or "",
+            "runtime_meta": row.get("runtime_meta") if isinstance(row.get("runtime_meta"), dict) else {},
             "error": row.get("error") if status == "error" else "",
             "result_json": result_json,
             "result_markdown": result_markdown,
@@ -334,6 +396,7 @@ def job_update(request):
 
         cur = job.result_json if isinstance(job.result_json, dict) else {}
         result_json_changed = False
+        runtime_meta = job.runtime_meta if isinstance(job.runtime_meta, dict) else {}
 
         if payload.get("result_markdown") is not None:
             md = payload.get("result_markdown", "") or ""
@@ -380,6 +443,17 @@ def job_update(request):
         if result_json_changed:
             job.result_json = normalize_result_json(cur)
             update_fields.append("result_json")
+
+        incoming_meta = payload.get("meta")
+        merged_meta = _merge_runtime_meta(
+            runtime_meta,
+            incoming_meta if isinstance(incoming_meta, dict) else None,
+            stage=job.stage or (payload.get("stage") or ""),
+            progress=job.progress,
+        )
+        if merged_meta != runtime_meta:
+            job.runtime_meta = merged_meta
+            update_fields.append("runtime_meta")
 
         if update_fields:
             job.save(update_fields=sorted(set(update_fields)))

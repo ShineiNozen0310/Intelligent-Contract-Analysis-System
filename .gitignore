@@ -1,4 +1,4 @@
-﻿# =========================
+# =========================
 # OS / Editor / IDE
 # =========================
 .DS_Store
@@ -10,6 +10,8 @@ desktop.ini
 *.bak
 *.orig
 *.rej
+*.stackdump
+*.dmp
 
 .idea/
 .vscode/
@@ -63,24 +65,30 @@ staticfiles/
 
 worker_out/
 job_*/
-runtime/
 logs/
 *.pid
 *.log
 celerybeat-schedule
+
+runtime/
 
 # =========================
 # Model / weights / cache
 # =========================
 hf_models/
 models/
-parsers/mineru/**/models/
-parsers/mineru/**/.cache/
 *.bin
 *.pt
 *.pth
 *.ckpt
 *.safetensors
+
+# parser local artifacts
+parsers/**/__pycache__/
+parsers/**/.pytest_cache/
+parsers/**/build/
+parsers/**/dist/
+parsers/**/.cache/
 
 # =========================
 # Flutter SDK / build outputs
@@ -114,6 +122,10 @@ desktop_app/dist/
 desktop_app/*.spec
 
 # =========================
-# Windows shortcut / desktop artifacts
+# Windows shortcuts
 # =========================
 *.lnk
+
+# keep source scripts tracked
+!*.bat
+!*.ps1

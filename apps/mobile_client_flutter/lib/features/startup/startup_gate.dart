@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -19,7 +19,7 @@ class _StartupGateState extends State<StartupGate>
   late final AnimationController _spinController;
   late final AnimationController _pulseController;
 
-  String _status = '\u6b63\u5728\u51c6\u5907\u5ba1\u67e5\u73af\u5883';
+  String _status = '正在准备审查环境';
   double _progress = 0.0;
 
   @override
@@ -45,15 +45,15 @@ class _StartupGateState extends State<StartupGate>
 
   Future<void> _bootstrap() async {
     final minDelay = Future<void>.delayed(const Duration(milliseconds: 1400));
-    final warmup = _waitForBackend();
-    await Future.wait([minDelay, warmup]);
+    final startupNotice = await _waitForBackend();
+    await minDelay;
 
     if (!mounted) {
       return;
     }
 
     setState(() {
-      _status = '\u542f\u52a8\u5b8c\u6210\uff0c\u6b63\u5728\u8fdb\u5165';
+      _status = '启动完成，正在进入工作台';
       _progress = 1;
     });
 
@@ -65,7 +65,7 @@ class _StartupGateState extends State<StartupGate>
     Navigator.of(context).pushReplacement(
       PageRouteBuilder<void>(
         transitionDuration: const Duration(milliseconds: 420),
-        pageBuilder: (_, __, ___) => const ReviewPage(),
+        pageBuilder: (_, __, ___) => ReviewPage(startupNotice: startupNotice),
         transitionsBuilder: (context, animation, secondary, child) {
           final slide = Tween<Offset>(
             begin: const Offset(0, 0.03),
@@ -80,47 +80,78 @@ class _StartupGateState extends State<StartupGate>
     );
   }
 
-  Future<void> _waitForBackend() async {
+  Future<String> _waitForBackend() async {
     final client = LocalApiClient(_defaultBaseUrl());
-    const attempts = 16;
+    const attempts = 14;
+
+    Map<String, dynamic>? lastReport;
+    ApiException? lastApiError;
 
     for (var i = 0; i < attempts; i++) {
       if (!mounted) {
-        return;
+        return '启动中断，请重新打开客户端。';
       }
 
       setState(() {
         _progress = (i + 1) / attempts;
-        _status = i < 5
-            ? '\u6b63\u5728\u542f\u52a8\u672c\u5730\u670d\u52a1...'
-            : i < 11
-                ? '\u6b63\u5728\u8fde\u63a5\u5ba1\u67e5\u5f15\u64ce...'
-                : '\u6b63\u5728\u540c\u6b65\u8fd0\u884c\u72b6\u6001...';
+        if (i < 4) {
+          _status = '正在检查本地服务...';
+        } else if (i < 10) {
+          _status = '正在检查审查引擎...';
+        } else {
+          _status = '正在同步运行状态...';
+        }
       });
 
       try {
-        final data = await client.health();
-        if (data['ok'] == true) {
+        final report = await client.preflight();
+        lastReport = report;
+        if (report['ok'] == true) {
           if (mounted) {
             setState(() {
-              _status = '\u672c\u5730\u670d\u52a1\u5df2\u5c31\u7eea';
+              _status = '启动检查通过，服务已就绪';
               _progress = 1;
             });
           }
-          return;
+          return '启动检查通过，服务已就绪。';
         }
+      } on ApiException catch (e) {
+        lastApiError = e;
       } catch (_) {
-        // ignore and retry
+        // Keep retrying.
       }
 
       await Future<void>.delayed(const Duration(milliseconds: 520));
     }
 
-    if (mounted) {
-      setState(() {
-        _status = '\u670d\u52a1\u4ecd\u5728\u9884\u70ed\uff0c\u5df2\u8fdb\u5165\u5de5\u4f5c\u53f0';
-      });
+    if (lastReport != null) {
+      return _noticeFromPreflight(lastReport);
     }
+    if (lastApiError != null) {
+      return lastApiError.displayText;
+    }
+    return '系统仍在预热，你可以进入工作台后点击“启动检查”继续诊断。';
+  }
+
+  static String _noticeFromPreflight(Map<String, dynamic> report) {
+    final code = (report['error_code'] ?? '').toString().trim();
+    final message = (report['error_message'] ?? report['summary'] ?? '启动检查未通过').toString().trim();
+    final suggestions = <String>[];
+    final rawSuggestions = report['suggestions'];
+    if (rawSuggestions is List) {
+      for (final item in rawSuggestions) {
+        final text = item.toString().trim();
+        if (text.isNotEmpty) {
+          suggestions.add(text);
+        }
+      }
+    }
+
+    final prefix = code.isEmpty ? '' : '[$code] ';
+    if (suggestions.isEmpty) {
+      return '$prefix$message';
+    }
+    return '$prefix$message\n建议：${suggestions.take(3).join('；')}';
   }
 
   static String _defaultBaseUrl() {
@@ -193,7 +224,7 @@ class _StartupGateState extends State<StartupGate>
                     ),
                     const SizedBox(height: 22),
                     Text(
-                      '\u5408\u540c\u667a\u80fd\u5ba1\u67e5',
+                      '智能合同审查系统',
                       style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                             color: Colors.white,
                             fontWeight: FontWeight.w900,
@@ -202,7 +233,7 @@ class _StartupGateState extends State<StartupGate>
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '\u6b63\u5728\u4e3a\u4f60\u52a0\u8f7d\u5ba1\u67e5\u5de5\u4f5c\u53f0',
+                      '正在为你加载审查工作台',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             color: const Color(0xFFD7E9FF),
                             fontWeight: FontWeight.w500,

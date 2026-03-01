@@ -3,7 +3,9 @@
 import 'review_controller.dart';
 
 class ReviewPage extends StatefulWidget {
-  const ReviewPage({super.key});
+  const ReviewPage({super.key, this.startupNotice = ''});
+
+  final String startupNotice;
 
   @override
   State<ReviewPage> createState() => _ReviewPageState();
@@ -18,6 +20,10 @@ class _ReviewPageState extends State<ReviewPage> {
   void initState() {
     super.initState();
     _controller.addListener(_onStateChanged);
+    if (widget.startupNotice.trim().isNotEmpty) {
+      _controller.applyStartupNotice(widget.startupNotice);
+    }
+    _controller.checkUpdateSilently();
   }
 
   @override
@@ -95,6 +101,10 @@ class _ReviewPageState extends State<ReviewPage> {
               _buildControlCard(),
               const SizedBox(height: 14),
               _buildProgressCard(),
+              const SizedBox(height: 14),
+              _buildRuntimeMetricsCard(),
+              const SizedBox(height: 14),
+              _buildUpdateCard(),
             ],
           ),
         ),
@@ -121,6 +131,10 @@ class _ReviewPageState extends State<ReviewPage> {
         _buildControlCard(),
         const SizedBox(height: 14),
         _buildProgressCard(),
+        const SizedBox(height: 14),
+        _buildRuntimeMetricsCard(),
+        const SizedBox(height: 14),
+        _buildUpdateCard(),
         const SizedBox(height: 14),
         _buildResultCard(),
       ],
@@ -380,6 +394,14 @@ class _ReviewPageState extends State<ReviewPage> {
               const Color(0xFFFBE6E6),
               const Color(0xFF9B2020),
             ),
+          if (_controller.errorCode.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _hintBar(
+              '错误码：${_controller.errorCode}',
+              const Color(0xFFFFF2D8),
+              const Color(0xFF8A5D10),
+            ),
+          ],
         ],
       ),
     );
@@ -412,7 +434,7 @@ class _ReviewPageState extends State<ReviewPage> {
             children: [
               Expanded(
                 child: Text(
-                  '\u5982\u9047\u5f02\u5e38\u53ef\u70b9\u51fb\u201c\u7cfb\u7edf\u68c0\u67e5\u201d\u5feb\u901f\u8bca\u65ad\u3002',
+                  '\u5982\u9047\u5f02\u5e38\u53ef\u70b9\u51fb\u201c\u542f\u52a8\u68c0\u67e5\u201d\u5feb\u901f\u8bca\u65ad\u3002',
                   style: Theme.of(context)
                       .textTheme
                       .bodySmall
@@ -422,7 +444,7 @@ class _ReviewPageState extends State<ReviewPage> {
               const SizedBox(width: 8),
               OutlinedButton(
                 onPressed: _controller.loading ? null : _controller.checkHealth,
-                child: const Text('\u7cfb\u7edf\u68c0\u67e5'),
+                child: const Text('\u542f\u52a8\u68c0\u67e5'),
               ),
             ],
           ),
@@ -477,6 +499,10 @@ class _ReviewPageState extends State<ReviewPage> {
                 child: const Text('\u5bfc\u51fa PDF'),
               ),
               OutlinedButton(
+                onPressed: _controller.loading ? null : _controller.exportDiagnostics,
+                child: const Text('\u5bfc\u51fa\u8bca\u65ad\u5305'),
+              ),
+              OutlinedButton(
                 onPressed: _controller.loading ? null : _controller.clearAll,
                 child: const Text('\u6e05\u7a7a'),
               ),
@@ -524,6 +550,201 @@ class _ReviewPageState extends State<ReviewPage> {
             const SizedBox(height: 8),
             Text('\u5bfc\u51fa\u6587\u4ef6\uff1a${_controller.exportedPath}',
                 style: Theme.of(context).textTheme.bodySmall),
+          ],
+          if (_controller.diagnosticsPath.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text('\u8bca\u65ad\u5305\uff1a${_controller.diagnosticsPath}',
+                style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRuntimeMetricsCard() {
+    final timings = _controller.stageTimings;
+    final items = timings.entries.toList();
+    items.sort((a, b) => b.value.compareTo(a.value));
+
+    var maxValue = 1.0;
+    for (final item in items) {
+      if (item.value > maxValue) {
+        maxValue = item.value;
+      }
+    }
+
+    final totalSeconds = _controller.totalSeconds;
+    final llmAttempts = _controller.llmAttempts;
+    final llmMaxAttempts = _controller.llmMaxAttempts;
+
+    return _panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '运行指标',
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '显示阶段耗时与重试信息，用于排查慢任务。',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: const Color(0xFF607388)),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _metaPill('总耗时', totalSeconds > 0 ? '${totalSeconds.toStringAsFixed(1)}s' : '--'),
+              _metaPill('审查计时', _controller.reviewElapsedText),
+              _metaPill('重试次数', '${_controller.llmRetryCount}'),
+              _metaPill(
+                'LLM尝试',
+                (llmAttempts > 0 && llmMaxAttempts > 0)
+                    ? '$llmAttempts/$llmMaxAttempts'
+                    : '--',
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (items.isEmpty)
+            Text(
+              '等待任务运行后，这里会显示每个阶段的耗时。',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: const Color(0xFF607388)),
+            ),
+          for (final item in items.take(8)) ...[
+            _timingRow(
+              label: _stageToCn(item.key),
+              seconds: item.value,
+              ratio: maxValue <= 0 ? 0 : (item.value / maxValue),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _timingRow({
+    required String label,
+    required double seconds,
+    required double ratio,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF29435E),
+                ),
+              ),
+            ),
+            Text(
+              '${seconds.toStringAsFixed(2)}s',
+              style: const TextStyle(
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF51667B),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 5),
+        LinearProgressIndicator(
+          value: ratio.clamp(0, 1).toDouble(),
+          minHeight: 6,
+          borderRadius: BorderRadius.circular(999),
+          color: const Color(0xFF2C8B8A),
+          backgroundColor: const Color(0xFFDCE8EE),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildUpdateCard() {
+    final hasCurrent = _controller.updateCurrentVersion.trim().isNotEmpty;
+    final hasLatest = _controller.updateLatestVersion.trim().isNotEmpty;
+    final canDownload = _controller.updateAvailable && !_controller.loading;
+    final hasPackage = _controller.updatePackagePath.trim().isNotEmpty;
+
+    return _panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '版本升级',
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '检查新版本后可直接下载安装包，不影响当前审查任务。',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: const Color(0xFF607388)),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _metaPill('当前版本', hasCurrent ? _controller.updateCurrentVersion : '--'),
+              _metaPill('最新版本', hasLatest ? _controller.updateLatestVersion : '--'),
+              _metaPill('更新状态', _controller.updateAvailable ? '可升级' : '最新'),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton(
+                onPressed: _controller.loading ? null : _controller.checkUpdateManually,
+                child: const Text('检查更新'),
+              ),
+              FilledButton(
+                onPressed: canDownload ? _controller.downloadUpdatePackage : null,
+                child: const Text('下载升级包'),
+              ),
+              OutlinedButton(
+                onPressed: hasPackage ? _controller.openUpdatePackageFolder : null,
+                child: const Text('打开文件夹'),
+              ),
+            ],
+          ),
+          if (_controller.updateNotes.trim().isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _hintBar(
+              '更新说明：${_controller.updateNotes}',
+              const Color(0xFFEAF3FF),
+              const Color(0xFF2B5E9E),
+            ),
+          ],
+          if (hasPackage) ...[
+            const SizedBox(height: 8),
+            Text(
+              '升级包路径：${_controller.updatePackagePath}',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: const Color(0xFF51667B)),
+            ),
           ],
         ],
       ),
@@ -937,3 +1158,10 @@ class _ReviewPageState extends State<ReviewPage> {
 
 
 }
+
+
+
+
+
+
+

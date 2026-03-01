@@ -1,76 +1,107 @@
 ﻿# 智能合同审查系统
 
-> 面向法务、采购、合同管理等业务场景的桌面审查产品。上传合同 PDF 后，系统自动完成 OCR、要素提取、风险识别与建议生成，并支持报告导出。
+面向企业法务、采购、合同管理场景的本地化审查产品。系统以“上传合同 -> 自动审查 -> 输出结论 -> 导出报告”为核心闭环，帮助业务团队在更短时间内识别风险、沉淀审查依据并形成可复核文档。
 
-## 当前目标
+## 产品价值
 
-- 桌面端：稳定可交付、可一键启动、可回收后台进程。
-- 移动端：保留 Flutter 跨平台能力，支持 Android/iOS 后续落地。
+- 降本增效：减少人工逐页通读工作量，快速定位关键风险点。
+- 统一口径：输出结构化审查结论，降低不同审查人之间的口径差异。
+- 结果可追溯：保留任务状态、阶段耗时、错误码与诊断信息，便于复核与审计。
+- 本地部署：支持私有化运行，兼顾数据安全与可控性。
 
 ## 核心能力
 
-- 合同 PDF 上传与任务调度。
-- OCR 文本抽取与预处理。
-- 盖章识别（可配置开关）。
-- LLM 审查（本地 vLLM 优先，远端回退）。
-- 产品化结果页（审查摘要、风险建议、审查时间）。
-- 审查结果导出 PDF。
+- 合同 PDF 审查流程
+  - 上传 PDF
+  - OCR 文本提取
+  - 合同信息与风险识别
+  - 审查建议生成
+  - 报告导出（PDF）
+- 健康检查与启动诊断
+  - 一键检查 Django / Worker / Redis / vLLM 可用性
+  - 返回标准错误码与修复建议
+- 稳定运行机制
+  - 后端服务统一由启动脚本拉起
+  - Django 启动前自动执行迁移（避免表结构不一致导致运行异常）
+- 更新能力
+  - 提供更新清单检查接口
+  - 支持版本号与安装包校验信息管理
 
-## 系统架构
+## 技术架构
 
 ```text
-Flutter 客户端（apps/mobile_client_flutter）
-  -> 本地统一 API（apps/local_api，8003）
-      -> Django API（contract_review，8000）
-      -> Worker API（contract_review_worker，8001）
+Flutter 客户端 (Windows 桌面)
+  -> Local API (8003)
+      -> Django API (8000)
+      -> Worker API (8001)
           -> Celery + Redis
-          -> OCR / Stamp / LLM
+          -> OCR / 风险识别 / 报告构建
+          -> vLLM (8002，可选或必选，取决于配置)
 ```
 
-### 默认端口
+默认端口：
 
-- `8000`：Django API（任务与状态）
-- `8001`：Worker API（审查执行）
-- `8002`：本地 vLLM（可选）
-- `8003`：Local API（前端统一入口）
+- `8000` Django
+- `8001` Worker
+- `8002` vLLM
+- `8003` Local API（前端统一入口）
 
-## 启动脚本矩阵（已整理）
+## 目录结构
 
-核心脚本已按职责分层到：
+```text
+apps/
+  local_api/                 # 前端统一 API（健康检查、任务代理、更新检查）
+  mobile_client_flutter/     # Flutter 桌面端（后续可扩展移动端）
+contract_review/             # Django 业务接口
+contract_review_worker/      # 异步审查执行与回调
+DjangoProject1/              # Django 项目配置
+packages/                    # 共享领域模块/结构化 schema
+scripts/
+  ops/                       # 启停、状态检查、运维脚本
+  release/                   # 打包、安装器、更新清单脚本
+hf_models/                   # 本地模型（通常不入库）
+runtime/                     # 运行日志与发布产物（通常不入库）
+```
 
-- `scripts/dev`：开发调试启动（Flutter 调试、一键联调）
-- `scripts/release`：发布与快捷方式（Release 构建、桌面入口）
-- `scripts/ops`：后端运维与清理（start/stop/status、网关、清理）
+## 快速开始（业务使用）
 
-根目录同名脚本保留为兼容入口，历史命令可继续使用：
+### 1. 启动系统
 
-- `launch_flutter_release_oneclick.bat`：桌面版一键启动（推荐给业务用户）。
-- `launch_flutter_oneclick.bat`：开发一键启动（后端 + Flutter 调试）。
-- `run_flutter_client.bat [device] [extra args]`：手动启动 Flutter。
+在工程根目录执行：
 
-示例：
+```bat
+start_all.bat start
+```
+
+查看状态：
+
+```bat
+start_all.bat status
+```
+
+### 2. 启动客户端
+
+开发调试：
 
 ```bat
 run_flutter_client.bat windows
-run_flutter_client.bat android --debug
-run_flutter_client.bat edge --web-port 8090
 ```
 
-## 快速启动（业务用户）
-
-### 方式 A：桌面快捷方式（推荐）
-
-双击 `合同审查桌面版.lnk`。
-
-### 方式 B：命令行一键启动
+或使用一键启动脚本：
 
 ```bat
-.\launch_flutter_release_oneclick.bat
+launch_flutter_release_oneclick.bat
 ```
 
-## 开发者启动
+### 3. 执行审查
 
-### 1) 安装依赖
+- 点击“健康检查”确认服务可用
+- 上传 PDF，点击“开始审查”
+- 审查完成后查看报告并导出 PDF
+
+## 开发环境准备
+
+### Python 依赖
 
 ```bat
 python -m venv .venv
@@ -78,120 +109,124 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 2) 启动后端
+### Flutter 依赖
 
 ```bat
-.\start_all.bat start
-.\start_all.bat status
+cd apps\mobile_client_flutter
+..\..\tools\flutter\bin\flutter.bat pub get
 ```
 
-### 3) 启动 Flutter（桌面或移动）
+### 基础检查
 
 ```bat
-.\run_flutter_client.bat windows
+.\.venv\Scripts\python.exe manage.py check
+..\tools\flutter\bin\flutter.bat analyze
 ```
 
-### 4) 停止后端
+## 关键配置说明（.env）
+
+建议先复制模板：
 
 ```bat
-.\stop_all.bat
+copy .env.example .env
 ```
 
-## 打包发布（Windows）
+常用配置项：
 
-### 构建 Release
+- 服务与路由
+  - `DJANGO_HOST` / `DJANGO_PORT`
+  - `LOCAL_API_DJANGO_BASE`
+  - `WORKER_BASE_URL`
+- LLM 路由
+  - `LLM_PROVIDER`
+  - `LLM_PRIMARY_PROVIDER`
+  - `LLM_REQUIRE_LOCAL_VLLM`
+  - `LOCAL_VLLM_BASE_URL`
+  - `LOCAL_VLLM_API_KEY`
+- 启动与稳定性
+  - `DJANGO_SERVER_MODE=waitress`（推荐）
+  - `RUN_DJANGO_MIGRATE_ON_START=1`（启动自动迁移）
+
+## 打包与发布
+
+### Flutter Release
 
 ```bat
-.\build_flutter_release.bat
+build_flutter_release.bat
 ```
 
-生成文件：
+产物：
 
 ```text
 apps/mobile_client_flutter/build/windows/x64/runner/Release/contract_review_flutter.exe
 ```
 
-### 创建/刷新桌面快捷方式
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\create_release_shortcut.ps1
-```
-
-## 结构清理与维护
-
-新增一键清理脚本：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\clean_workspace.ps1
-```
-
-会清理：
-
-- Flutter 构建残留（`build`、`.dart_tool`、`ephemeral`）
-- Python 缓存（`__pycache__`、`*.pyc`、`*.pyo`）
-- `parsers/mineru/mineru.egg-info` 生成残留
-
-## 关键配置（.env）
-
-### LLM 路由
-
-- `LLM_PRIMARY_PROVIDER`
-- `LLM_FALLBACK_PROVIDER`
-- `LLM_REQUIRE_LOCAL_VLLM`
-
-### 本地 vLLM
-
-- `LOCAL_VLLM_BASE_URL`
-- `LOCAL_VLLM_START_CMD`
-- `LOCAL_VLLM_MODEL`
-
-### OCR / 盖章
-
-- `OCR_BACKEND`
-- `OCR_DPI`
-- `STAMP_ENABLED`
-
-## 常见问题
-
-### 前端健康检查失败
+### 安装包构建
 
 ```bat
-.\start_all.bat status
+build_installer_inno.bat
 ```
 
-确认 `8003` 服务可用。
+或（NSIS）：
 
-### 本地 vLLM 连接失败（127.0.0.1:8002）
-
-若 vLLM 在 WSL NAT 模式，Windows 可能无法直连 `127.0.0.1`。可改为 WSL IP：
-
-```text
-LOCAL_VLLM_BASE_URL=http://<WSL_IP>:8002/v1
+```bat
+build_installer_nsis.bat
 ```
 
-### 上传提示文件类型错误
+> 完整包（含 `.venv` + 模型）体积较大，建议按部署场景选择是否内置。
 
-请确认文件是有效 PDF，而非仅改扩展名。
+## 运行排障（高频）
 
-## 目录结构
+### 启动失败/健康检查失败
 
-```text
-apps/
-  local_api/                 # 前端统一 API
-  mobile_client_flutter/     # Flutter 客户端（桌面 + 移动）
-contract_review/             # Django 业务接口
-contract_review_worker/      # 审查执行服务
-packages/                    # 共享模块
-parsers/                     # 解析器与模型相关依赖
-scripts/
-  dev/                       # 开发调试脚本
-  release/                   # 发布相关脚本
-  ops/                       # 运维与清理脚本
+```bat
+start_all.bat status
 ```
 
-## 发布前检查
+重点观察 8000/8001/8003/8002 是否全部可达。
 
-- `flutter analyze`
-- `python manage.py check`
-- `build_flutter_release.bat`
-- 真实 PDF 的端到端审查与导出验证
+### 提交任务时报 `E-UPSTREAM-START-FAILED`
+
+常见原因：
+
+- Django 数据库迁移未完成
+- Django / Worker 未启动
+
+修复命令：
+
+```bat
+.\.venv\Scripts\python.exe manage.py migrate
+start_all.bat restart
+```
+
+### vLLM 不可达
+
+- 检查 `LOCAL_VLLM_BASE_URL`
+- 检查 8002 端口监听
+- 检查模型路径与 API Key
+
+## 版本与更新
+
+- 版本号文件：`VERSION`
+- 更新清单：`runtime/releases/update_manifest.json`
+- 更新检查接口：`GET /contract/api/update/check/`
+
+建议每次发版流程：
+
+1. 更新 `VERSION`
+2. 构建 Release
+3. 生成安装包
+4. 生成/更新清单与校验值
+5. 回归测试后发布
+
+## 数据与安全建议
+
+- 生产环境不要提交 `.env`、模型权重、运行日志。
+- 对外分发安装包时，建议附带 SHA256 校验值。
+- 如需多机部署，优先使用内网分发并设置访问控制。
+
+## 路线建议（后续）
+
+- P1 完整收口：安装器稳定化、升级链路固化、日志诊断包标准化
+- P2 能力演进：多合同批量审查、模板化规则策略、移动端适配
+- P3 交付能力：组织级权限、审查资产沉淀、可观测性面板

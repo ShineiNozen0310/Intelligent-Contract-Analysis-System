@@ -1511,6 +1511,61 @@ def _llm_with_timeout(text: str, timeout_s: int) -> tuple[dict, Dict[str, Any]]:
         return fut.result(timeout=timeout_s)
 
 
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    retryable_tokens = [
+        'timed out',
+        'timeout',
+        'connection reset',
+        'connection aborted',
+        'temporarily unavailable',
+        'service unavailable',
+        'too many requests',
+        'rate limit',
+        'gateway timeout',
+        'network',
+    ]
+    return any(token in msg for token in retryable_tokens)
+
+
+def _llm_with_retry(text: str, timeout_s: int) -> tuple[dict, Dict[str, Any]]:
+    max_attempts = max(1, _env_int('LLM_RETRY_ATTEMPTS', 2))
+    base_backoff = max(0.0, _env_float('LLM_RETRY_BACKOFF_SECONDS', 1.5))
+    started = time.perf_counter()
+    retry_errors: List[Dict[str, Any]] = []
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            review_json, llm_call_meta = _llm_with_timeout(text, timeout_s)
+            meta: Dict[str, Any] = dict(llm_call_meta) if isinstance(llm_call_meta, dict) else {}
+            meta.update(
+                {
+                    'attempt': attempt,
+                    'attempts': attempt,
+                    'max_attempts': max_attempts,
+                    'retry_enabled': max_attempts > 1,
+                    'elapsed_seconds': round(time.perf_counter() - started, 3),
+                    'retry_errors': retry_errors,
+                }
+            )
+            return review_json, meta
+        except concurrent.futures.TimeoutError:
+            retry_errors.append({'attempt': attempt, 'type': 'timeout', 'error': f'llm timeout after {timeout_s}s'})
+            if attempt >= max_attempts:
+                raise
+        except Exception as exc:
+            retryable = _is_retryable_llm_error(exc)
+            retry_errors.append({'attempt': attempt, 'type': 'exception', 'error': str(exc), 'retryable': retryable})
+            if attempt >= max_attempts or not retryable:
+                raise
+
+        sleep_s = base_backoff * (2 ** (attempt - 1))
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+
+    raise RuntimeError('llm retry exhausted')
+
+
 # =========================
 # accurate pipeline (MinerU)
 # =========================
@@ -1622,6 +1677,11 @@ def _run_accurate(job_id: int, pdf_path: str, out_dir: Path) -> Dict[str, Any]:
 # =========================
 def _do_analyze(job_id: int, pdf_path: str, out_root: str):
     mode = _review_mode()
+    pipeline_started = time.perf_counter()
+    stage_timings: Dict[str, float] = {}
+
+    def _mark_stage(name: str, started_at: float) -> None:
+        stage_timings[name] = round(max(0.0, time.perf_counter() - started_at), 3)
 
     try:
         out_root = out_root or str(BASE_DIR / "worker_out")
@@ -1632,6 +1692,7 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
         fast_only_pages = int(os.environ.get("FAST_ONLY_IF_PAGES_GT") or "0")
 
         # stamp detection (YOLO) - full doc with early-exit
+        stamp_started = time.perf_counter()
         stamp_result: Optional[Dict[str, Any]] = None
         stamp_images: Optional[List[Path]] = None
         ocr_indices: Optional[List[int]] = None
@@ -1711,6 +1772,8 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
                     stamp_result = {"stamp_status": "UNCERTAIN", "evidence": [], "stamp_fallback_error": str(e)}
                 else:
                     stamp_result["stamp_fallback_error"] = str(e)
+        _mark_stage("stamp", stamp_started)
+
         if fast_only_pages > 0 and page_count > fast_only_pages and mode in ("auto", "accurate"):
             print(f"[job {job_id}] force fast (pages={page_count} > {fast_only_pages})", flush=True)
             mode = "fast"
@@ -1726,6 +1789,7 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
 
         final_text = ""
         meta: Dict[str, Any] = {"mode": mode}
+        ocr_started = time.perf_counter()
 
         if mode in ("auto", "fast"):
             notify_django({"job_id": job_id, "status": "running", "progress": 15, "stage": "ocr_start", "mode": "fast"})
@@ -1895,10 +1959,15 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
                 }
             )
 
+        _mark_stage("ocr", ocr_started)
+
         if _env_flag("OCR_ZERO_TOLERANCE", False):
             guard = _ocr_zero_tolerance_guard(final_text)
             meta["ocr_zero_tolerance"] = guard
             if not guard.get("ok", False):
+                stage_timings["total"] = round(max(0.0, time.perf_counter() - pipeline_started), 3)
+                meta["stage_timings"] = stage_timings
+                meta["total_seconds"] = stage_timings["total"]
                 err = (
                     "OCR zero-tolerance guard blocked result: "
                     f"score={guard.get('score')} reasons={','.join(guard.get('reasons') or [])} "
@@ -1924,12 +1993,18 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
         meta.update(llm_meta)
         notify_django({"job_id": job_id, "status": "running", "progress": 80, "stage": "llm_start", "mode": meta.get("mode"), "meta": meta})
 
+        llm_started = time.perf_counter()
         try:
-            review_json, llm_call_meta = _llm_with_timeout(llm_text, timeout_s)
+            review_json, llm_call_meta = _llm_with_retry(llm_text, timeout_s)
+            _mark_stage("llm", llm_started)
             meta["llm_call"] = llm_call_meta
             if isinstance(review_json, dict):
                 review_json["_llm_meta"] = llm_call_meta
         except concurrent.futures.TimeoutError:
+            _mark_stage("llm", llm_started)
+            stage_timings["total"] = round(max(0.0, time.perf_counter() - pipeline_started), 3)
+            meta["stage_timings"] = stage_timings
+            meta["total_seconds"] = stage_timings["total"]
             err = f"llm timeout after {timeout_s}s"
             result_json = build_error_result(err, mode=meta.get("mode"), meta=meta, stamp_result=stamp_result)
             notify_django({
@@ -1945,6 +2020,10 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
             })
             return
         except Exception as e:
+            _mark_stage("llm", llm_started)
+            stage_timings["total"] = round(max(0.0, time.perf_counter() - pipeline_started), 3)
+            meta["stage_timings"] = stage_timings
+            meta["total_seconds"] = stage_timings["total"]
             err = f"llm failed: {e}"
             result_json = build_error_result(err, mode=meta.get("mode"), meta=meta, stamp_result=stamp_result)
             notify_django({
@@ -1959,6 +2038,10 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
                 "result_json": result_json,
             })
             return
+
+        stage_timings["total"] = round(max(0.0, time.perf_counter() - pipeline_started), 3)
+        meta["stage_timings"] = stage_timings
+        meta["total_seconds"] = stage_timings["total"]
 
         review_json = merge_stamp_result(review_json, stamp_result)
 
@@ -1975,9 +2058,18 @@ def _do_analyze(job_id: int, pdf_path: str, out_root: str):
         print(f"[job {job_id}] finished | mode={meta.get('mode')}", flush=True)
 
     except Exception as e:
+        stage_timings["total"] = round(max(0.0, time.perf_counter() - pipeline_started), 3)
         err = f"worker exception: {e}"
         print(f"[job {job_id}] FATAL: {err}", flush=True)
-        notify_django({"job_id": job_id, "status": "error", "progress": 100, "stage": "worker_error", "error": err, "mode": mode})
+        notify_django({
+            "job_id": job_id,
+            "status": "error",
+            "progress": 100,
+            "stage": "worker_error",
+            "error": err,
+            "mode": mode,
+            "meta": {"stage_timings": stage_timings, "total_seconds": stage_timings.get("total", 0.0)},
+        })
 
 
 @app.post("/analyze")

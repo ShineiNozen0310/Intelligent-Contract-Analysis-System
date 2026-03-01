@@ -18,4 +18,5 @@ class ContractJob(models.Model):
 
     result_markdown = models.TextField(blank=True, default="")
     result_json = models.JSONField(blank=True, null=True)
+    runtime_meta = models.JSONField(blank=True, null=True, default=dict)
     error = models.TextField(blank=True, default="")
